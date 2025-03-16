@@ -10,7 +10,10 @@ pub mod device;
 pub mod l2cap_channel;
 pub mod service;
 
-pub(crate) mod bindings;
+mod bindings;
+mod callbacks;
+mod vm;
+mod vm_context;
 
 /// A platform-specific device identifier.
 /// On android it contains the Bluetooth address in the format `AB:CD:EF:01:23:45`.

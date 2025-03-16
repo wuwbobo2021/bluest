@@ -1,3 +1,5 @@
+// NOTE: API Level 29 required
+
 #![cfg(feature = "l2cap")]
 
 use std::sync::Arc;
@@ -8,6 +10,7 @@ use java_spaghetti::{ByteArray, Global, Local, PrimitiveArray};
 use tracing::{debug, warn};
 
 use super::bindings::android::bluetooth::{BluetoothDevice, BluetoothSocket};
+use super::bindings::android::os::Build_VERSION;
 use super::OptionExt;
 use crate::error::ErrorKind;
 use crate::{Error, Result};
@@ -18,6 +21,14 @@ pub fn open_l2cap_channel(
     secure: bool,
 ) -> std::prelude::v1::Result<(L2capChannelReader, L2capChannelWriter), crate::Error> {
     device.vm().with_env(|env| {
+        if Build_VERSION::SDK_INT(env) < 29 {
+            return Err(crate::Error::new(
+                ErrorKind::NotSupported,
+                None,
+                "The L2CAP feature requires Android API Level 29 or above".to_string(),
+            ));
+        }
+
         let device = device.as_local(env);
 
         let channel = if secure {

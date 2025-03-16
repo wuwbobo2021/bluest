@@ -1,23 +1,24 @@
 use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 use futures_core::Stream;
 use futures_lite::{stream, StreamExt};
-use java_spaghetti::{Arg, ByteArray, Env, Global, Local, Null, PrimitiveArray, VM};
+use java_spaghetti::{ByteArray, Env, Global, Local, Null, PrimitiveArray, Ref};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use super::bindings::android::bluetooth::le::{BluetoothLeScanner, ScanResult, ScanSettings, ScanSettings_Builder};
+use super::bindings::android::bluetooth::le::{
+    BluetoothLeScanner, ScanCallback, ScanResult, ScanSettings, ScanSettings_Builder,
+};
 use super::bindings::android::bluetooth::{BluetoothAdapter, BluetoothManager};
-use super::bindings::android::os::ParcelUuid;
-use super::bindings::com::github::alexmoon::bluest::android::BluestScanCallback;
+use super::bindings::android::os::{Build_VERSION, ParcelUuid};
+use super::bindings::java::lang::{String as JString, Throwable};
+use super::bindings::java::util::Map_Entry;
+use super::callbacks::{ScanCallbackProxy, ScanCallbackProxyBuild};
 use super::device::DeviceImpl;
-use super::{JavaIterator, OptionExt};
-use crate::android::bindings::java::util::Map_Entry;
+use super::{vm_context, JavaIterator, OptionExt};
+
 use crate::util::defer;
 use crate::{
     AdapterEvent, AdvertisementData, AdvertisingDevice, ConnectionEvent, Device, DeviceId, ManufacturerData, Result,
@@ -35,20 +36,30 @@ pub struct AdapterImpl {
 }
 
 impl AdapterImpl {
-    pub unsafe fn new(vm: *mut java_spaghetti::sys::JavaVM, manager: java_spaghetti::sys::jobject) -> Result<Self> {
-        let vm = VM::from_raw(vm);
-        let manager: Global<BluetoothManager> = Global::from_raw(vm, manager);
+    pub async fn default() -> Option<Self> {
+        if !vm_context::ndk_context_available() {
+            return None;
+        };
+        use super::bindings::android::content::Context;
+        let context = vm_context::get_android_context();
 
-        vm.with_env(|env| {
-            let local_manager = manager.as_ref(env);
-            let adapter = local_manager.getAdapter()?.non_null()?;
-            let le_scanner = adapter.getBluetoothLeScanner()?.non_null()?;
+        vm_context::get_vm().with_env(|env| {
+            let local_context = context.as_ref(env);
+            let service_name = JString::from_env_str(env, Context::BLUETOOTH_SERVICE);
+            let manager = local_context
+                .getSystemService_String(service_name)
+                .ok()??
+                .cast::<BluetoothManager>()
+                .ok()?;
+            let local_manager = manager.as_ref();
+            let adapter = local_manager.getAdapter().ok()??;
+            let le_scanner = adapter.getBluetoothLeScanner().ok()??;
 
-            Ok(Self {
+            Some(Self {
                 inner: Arc::new(AdapterInner {
                     _adapter: adapter.as_global(),
                     le_scanner: le_scanner.as_global(),
-                    manager: manager.clone(),
+                    manager: manager.as_global(),
                 }),
             })
         })
@@ -79,8 +90,7 @@ impl AdapterImpl {
         _services: &'a [Uuid],
     ) -> Result<impl Stream<Item = AdvertisingDevice> + Send + Unpin + 'a> {
         self.inner.manager.vm().with_env(|env| {
-            let receiver = SCAN_CALLBACKS.allocate();
-            let callback = BluestScanCallback::new(env, receiver.id)?;
+            let (callback, receiver) = BluestScanCallback::build(env)?;
             let callback_global = callback.as_global();
             let scanner = self.inner.le_scanner.as_ref(env);
             let settings = ScanSettings_Builder::new(env)?;
@@ -160,81 +170,6 @@ impl std::fmt::Debug for AdapterImpl {
     }
 }
 
-static SCAN_CALLBACKS: CallbackRouter<AdvertisingDevice> = CallbackRouter::new();
-
-struct CallbackRouter<T: Send + 'static> {
-    map: Mutex<Option<HashMap<i32, Sender<T>>>>,
-    next_id: AtomicI32,
-}
-
-impl<T: Send + 'static> CallbackRouter<T> {
-    const fn new() -> Self {
-        Self {
-            map: Mutex::new(None),
-            next_id: AtomicI32::new(0),
-        }
-    }
-
-    fn allocate(&'static self) -> CallbackReceiver<T> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = async_channel::bounded(16);
-        self.map
-            .lock()
-            .unwrap()
-            .get_or_insert_with(Default::default)
-            .insert(id, sender);
-
-        CallbackReceiver {
-            router: self,
-            id,
-            receiver,
-        }
-    }
-
-    fn callback(&'static self, id: i32, val: T) {
-        if let Some(sender) = self.map.lock().unwrap().as_mut().unwrap().get_mut(&id) {
-            if let Err(e) = sender.send_blocking(val) {
-                warn!("failed to send scan callback: {:?}", e)
-            }
-        }
-    }
-}
-
-struct CallbackReceiver<T: Send + 'static> {
-    router: &'static CallbackRouter<T>,
-    id: i32,
-    receiver: Receiver<T>,
-}
-
-impl<T: Send + 'static> Stream for CallbackReceiver<T> {
-    type Item = T;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // safety: this is just a manually-written pin projection.
-        let receiver = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().receiver) };
-        receiver.poll_next(cx)
-    }
-}
-
-impl<T: Send> Drop for CallbackReceiver<T> {
-    fn drop(&mut self) {
-        self.router.map.lock().unwrap().as_mut().unwrap().remove(&self.id);
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_github_alexmoon_bluest_android_BluestScanCallback_nativeOnScanResult(
-    env: Env<'_>,
-    _class: *mut (), // self class, ignore
-    id: i32,
-    callback_type: i32,
-    scan_result: Arg<ScanResult>,
-) {
-    if let Err(e) = on_scan_result(env, id, callback_type, scan_result) {
-        warn!("on_scan_result failed: {:?}", e);
-    }
-}
-
 fn convert_uuid(uuid: Local<'_, ParcelUuid>) -> Result<Uuid> {
     let uuid = uuid.getUuid()?.non_null()?;
     let lsb = uuid.getLeastSignificantBits()? as u64;
@@ -242,18 +177,21 @@ fn convert_uuid(uuid: Local<'_, ParcelUuid>) -> Result<Uuid> {
     Ok(Uuid::from_u64_pair(msb, lsb))
 }
 
-#[no_mangle]
-fn on_scan_result(env: Env<'_>, id: i32, callback_type: i32, scan_result: Arg<ScanResult>) -> Result<()> {
-    let scan_result = unsafe { scan_result.into_ref(env) }.non_null()?;
-
-    tracing::info!("got callback! {} {}", id, callback_type);
+fn on_scan_result(env: Env<'_>, callback_type: i32, scan_result: Ref<ScanResult>) -> Result<AdvertisingDevice> {
+    tracing::info!("got callback! {}", callback_type);
 
     let scan_record = scan_result.getScanRecord()?.non_null()?;
     let device = scan_result.getDevice()?.non_null()?;
 
     let address = device.getAddress()?.non_null()?.to_string_lossy();
     let rssi = scan_result.getRssi()?;
-    let is_connectable = scan_result.isConnectable()?;
+    let is_connectable = if Build_VERSION::SDK_INT(env) >= 26 {
+        scan_result.isConnectable()?
+    } else {
+        // TODO confirm that it is really unavailable, and make `is_connectable` an `Option`;
+        // or try to check `eventType` via `toString()` (see `ScanResult.java`).
+        true
+    };
     let local_name = scan_record.getDeviceName()?.map(|s| s.to_string_lossy());
     let tx_power_level = scan_record.getTxPowerLevel()?;
 
@@ -290,7 +228,7 @@ fn on_scan_result(env: Env<'_>, id: i32, callback_type: i32, scan_result: Arg<Sc
 
     let device_id = DeviceId(address);
 
-    let d = AdvertisingDevice {
+    Ok(AdvertisingDevice {
         device: Device(DeviceImpl {
             id: device_id,
             device: device.as_global(),
@@ -304,19 +242,45 @@ fn on_scan_result(env: Env<'_>, id: i32, callback_type: i32, scan_result: Arg<Sc
             tx_power_level: Some(tx_power_level as _),
         },
         rssi: Some(rssi as _),
-    };
-    SCAN_CALLBACKS.callback(id, d);
-
-    Ok(())
+    })
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_github_alexmoon_bluest_android_BluestScanCallback_nativeOnScanFailed(
-    _env: Env<'_>,
-    _class: *mut (), // self class, ignore
-    id: i32,
-    error_code: i32,
-) {
-    tracing::error!("got scan fail! {} {}", id, error_code);
-    todo!()
+struct BluestScanCallback {
+    sender: Sender<AdvertisingDevice>,
+}
+
+impl BluestScanCallback {
+    fn build(env: Env<'_>) -> Result<(Local<'_, ScanCallback>, Receiver<AdvertisingDevice>), Local<'_, Throwable>> {
+        let (sender, receiver) = async_channel::bounded(16);
+        let proxy = Arc::new(Box::new(Self { sender }) as Box<dyn ScanCallbackProxy>);
+        Ok((ScanCallback::new_rust_proxy(env, proxy)?, receiver))
+    }
+}
+
+impl ScanCallbackProxy for BluestScanCallback {
+    fn onScanResult<'env>(
+        &self,
+        env: Env<'env>,
+        _this: java_spaghetti::Ref<ScanCallback>,
+        callback_type: i32,
+        result: Option<java_spaghetti::Ref<'env, ScanResult>>,
+    ) {
+        let Some(result) = result else {
+            return;
+        };
+        let adv_dev = match on_scan_result(env, callback_type, result) {
+            Ok(dev) => dev,
+            Err(e) => {
+                warn!("failed to process the scan result: {:?}", e);
+                return;
+            }
+        };
+        if let Err(e) = self.sender.send_blocking(adv_dev) {
+            warn!("failed to send scan callback: {:?}", e)
+        }
+    }
+
+    fn onScanFailed<'env>(&self, _env: Env<'env>, _this: java_spaghetti::Ref<ScanCallback>, error_code: i32) {
+        tracing::error!("got scan fail! {}", error_code);
+    }
 }
