@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_channel::{Receiver, Sender};
 use futures_core::Stream;
@@ -9,12 +9,12 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::bindings::android::bluetooth::le::{
-    BluetoothLeScanner, ScanCallback, ScanResult, ScanSettings, ScanSettings_Builder,
+    BluetoothLeScanner, ScanCallback, ScanFilter_Builder, ScanResult, ScanSettings, ScanSettings_Builder,
 };
 use super::bindings::android::bluetooth::{BluetoothAdapter, BluetoothManager};
 use super::bindings::android::os::{Build_VERSION, ParcelUuid};
 use super::bindings::java::lang::{String as JString, Throwable};
-use super::bindings::java::util::Map_Entry;
+use super::bindings::java::util::{List, Map_Entry};
 use super::callbacks::{ScanCallbackProxy, ScanCallbackProxyBuild};
 use super::device::DeviceImpl;
 use super::{vm_context, JavaIterator, OptionExt};
@@ -24,9 +24,10 @@ use crate::{
     AdapterEvent, AdvertisementData, AdvertisingDevice, ConnectionEvent, Device, DeviceId, ManufacturerData, Result,
 };
 
+#[allow(unused)]
 struct AdapterInner {
     manager: Global<BluetoothManager>,
-    _adapter: Global<BluetoothAdapter>,
+    adapter: Global<BluetoothAdapter>,
     le_scanner: Global<BluetoothLeScanner>,
 }
 
@@ -37,6 +38,12 @@ pub struct AdapterImpl {
 
 impl AdapterImpl {
     pub async fn default() -> Option<Self> {
+        static ADAPTER_INNER: OnceLock<Arc<AdapterInner>> = OnceLock::new();
+
+        if let Some(arc) = ADAPTER_INNER.get() {
+            return Some(Self { inner: arc.clone() });
+        }
+
         if !vm_context::ndk_context_available() {
             return None;
         };
@@ -55,12 +62,14 @@ impl AdapterImpl {
             let adapter = local_manager.getAdapter().ok()??;
             let le_scanner = adapter.getBluetoothLeScanner().ok()??;
 
+            let inner = AdapterInner {
+                adapter: adapter.as_global(),
+                le_scanner: le_scanner.as_global(),
+                manager: manager.as_global(),
+            };
+            let _ = ADAPTER_INNER.set(Arc::new(inner));
             Some(Self {
-                inner: Arc::new(AdapterInner {
-                    _adapter: adapter.as_global(),
-                    le_scanner: le_scanner.as_global(),
-                    manager: manager.as_global(),
-                }),
+                inner: ADAPTER_INNER.get()?.clone(),
             })
         })
     }
@@ -87,16 +96,32 @@ impl AdapterImpl {
 
     pub async fn scan<'a>(
         &'a self,
-        _services: &'a [Uuid],
+        services: &'a [Uuid],
     ) -> Result<impl Stream<Item = AdvertisingDevice> + Send + Unpin + 'a> {
         self.inner.manager.vm().with_env(|env| {
             let (callback, receiver) = BluestScanCallback::build(env)?;
             let callback_global = callback.as_global();
+
             let scanner = self.inner.le_scanner.as_ref(env);
-            let settings = ScanSettings_Builder::new(env)?;
-            settings.setScanMode(ScanSettings::SCAN_MODE_LOW_LATENCY)?;
-            let settings = settings.build()?.non_null()?;
-            scanner.startScan_List_ScanSettings_ScanCallback(Null, settings, callback)?;
+
+            let settings_builder = ScanSettings_Builder::new(env)?;
+            settings_builder.setScanMode(ScanSettings::SCAN_MODE_LOW_LATENCY)?;
+            let settings = settings_builder.build()?.non_null()?;
+
+            if !services.is_empty() {
+                let filter_builder = ScanFilter_Builder::new(env)?;
+                let filter_list = List::of(env)?.non_null()?;
+                for uuid in services {
+                    let uuid_string = JString::from_env_str(env, uuid.to_string());
+                    let parcel_uuid = ParcelUuid::fromString(env, uuid_string)?;
+                    filter_builder.setServiceUuid_ParcelUuid(parcel_uuid)?;
+                    let filter = filter_builder.build()?.non_null()?;
+                    filter_list.add_Object(filter)?;
+                }
+                scanner.startScan_List_ScanSettings_ScanCallback(filter_list, settings, callback)?;
+            } else {
+                scanner.startScan_List_ScanSettings_ScanCallback(Null, settings, callback)?;
+            };
 
             let guard = defer(move || {
                 self.inner.manager.vm().with_env(|env| {
@@ -252,8 +277,7 @@ struct BluestScanCallback {
 impl BluestScanCallback {
     fn build(env: Env<'_>) -> Result<(Local<'_, ScanCallback>, Receiver<AdvertisingDevice>), Local<'_, Throwable>> {
         let (sender, receiver) = async_channel::bounded(16);
-        let proxy = Arc::new(Box::new(Self { sender }) as Box<dyn ScanCallbackProxy>);
-        Ok((ScanCallback::new_rust_proxy(env, proxy)?, receiver))
+        Ok((ScanCallback::new_rust_proxy(env, Self { sender })?, receiver))
     }
 }
 
