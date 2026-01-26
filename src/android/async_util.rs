@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::task;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_broadcast::{Receiver, Sender};
 use async_lock::{Mutex, MutexGuard};
@@ -10,19 +10,28 @@ use futures_core::Stream;
 use futures_lite::{FutureExt, StreamExt};
 use futures_timer::Delay;
 
+/// the first item in the tuple stores a value from the last "foreign" callback;
+/// the second item in the tuple marks for an unfinished operation caused by
+/// dropping the `ExcluderLock` before the "foreign" callback occurs;
+/// the next `Self::lock` should wait for it.
+type ExcluderStorage<T> = (Option<T>, Option<ExcluderLock<T>>);
+
 /// Reusable exclusive register for `ExcluderLock`.
 pub struct Excluder<T: Send + Clone> {
     inner: Mutex<Weak<Sender<()>>>,
-    last_val: Arc<Mutex<Option<T>>>,
+    storage: Arc<Mutex<ExcluderStorage<T>>>,
+    timeout: Duration,
 }
 
 /// Prevents other tasks from doing the same operation before the corresponding
 /// "foreign" callback is reiceived by the current task. Unlocks on dropping.
 pub struct ExcluderLock<T: Send + Clone> {
     #[allow(unused)]
-    inner: Option<Arc<Sender<()>>>, // always `Some` before `drop()`
+    inner: Arc<Sender<()>>,
     receiver: Receiver<()>,
-    last_val: Weak<Mutex<Option<T>>>,
+    storage: Weak<Mutex<ExcluderStorage<T>>>,
+    firm_lock: Option<Instant>, // it is set when `wait_unlock` is called
+    timeout: Duration,
 }
 
 impl<T: Send + Clone, E: Send + Clone> Excluder<Result<T, E>> {
@@ -42,29 +51,30 @@ impl<T: Send + Clone, E: Send + Clone> Excluder<Result<T, E>> {
 
 impl<T: Send + Clone> Excluder<T> {
     /// Creates a new unlocked `Excluder`.
-    pub fn new() -> Self {
+    pub fn new(callback_timeout: Duration) -> Self {
         Self {
             inner: Mutex::new(Weak::new()),
-            last_val: Arc::new(Mutex::new(None)),
+            storage: Arc::new(Mutex::new((None, None))),
+            timeout: callback_timeout,
         }
     }
 
     /// Clones and returns the last value returned by the "foreign" callback.
     pub fn last_value(&self) -> Option<T> {
-        self.last_val.lock_blocking().clone()
-    }
-
-    /// Checks if the excluder is locked.
-    #[allow(unused)]
-    pub fn is_locked(&self) -> bool {
-        // Don't call it in this module
-        self.inner.lock_blocking().strong_count() > 0
+        self.storage.lock_blocking().0.clone()
     }
 
     /// Waits until the excluder is unlocked and locks the excluder.
     /// Call this right before calling a method that will produce a "foreign" callback;
     /// after calling that method, call [ExcluderLock::wait_unlock] in the same task.
     pub async fn lock(&self) -> ExcluderLock<T> {
+        // checks if there is a lock stored to the `Excluder` itself when a `ExcluderLock`
+        // is dropped before the future returned by [ExcluderLock::wait_unlock] finishes.
+        let last_drop_lock = self.storage.lock().await.1.take();
+        if let Some(lock) = last_drop_lock {
+            let _ = lock.wait_unlock().await;
+        }
+
         // waits for the waking signal if the excluder is currently locked.
         let receiver = {
             let guard_inner = self.inner.lock().await;
@@ -82,12 +92,23 @@ impl<T: Send + Clone> Excluder<T> {
             drop(guard_inner);
             return Box::pin(self.lock()).await;
         }
+
         // don't drop the guard before setting the lock; `async_lock` is used for this requirement.
         self.unchecked_set_lock(&mut guard_inner)
     }
 
     /// Locks the excluder if it is previously unlocked.
     pub fn try_lock(&self) -> Option<ExcluderLock<T>> {
+        let mut store = self.storage.lock_blocking();
+        if let Some(last_drop_lock) = store.1.as_ref() {
+            let instant_timeout = last_drop_lock.firm_lock.unwrap() + self.timeout;
+            if last_drop_lock.receiver.is_empty() && Instant::now() < instant_timeout {
+                return None; // `last_drop_lock` is still valid
+            }
+        }
+        let _ = store.1.take();
+        drop(store);
+
         let mut guard_inner = self.inner.lock_blocking();
         if guard_inner.strong_count() == 0 {
             Some(self.unchecked_set_lock(&mut guard_inner))
@@ -102,20 +123,25 @@ impl<T: Send + Clone> Excluder<T> {
         let sender = Arc::new(sender);
         **guard_inner = Arc::downgrade(&sender); // sets the lock
         ExcluderLock {
-            inner: Some(sender),
+            inner: sender,
             receiver,
-            last_val: Arc::downgrade(&self.last_val),
+            storage: Arc::downgrade(&self.storage),
+            firm_lock: None,
+            timeout: self.timeout,
         }
     }
 
     /// Sends the "completed" (unlock) signal from the "foreign" callback.
     pub fn unlock(&self, result: T) {
-        self.last_val.lock_blocking().replace(result);
+        // XXX: this may be changed to disallow update of "last value" storage if `self`
+        // is not locked by an operation, or a "dropped" lock is placed in the storage.
+        self.storage.lock_blocking().0.replace(result);
 
         let mut guard_inner = self.inner.lock_blocking();
         if let Some(sender) = guard_inner.upgrade() {
             // to prevent dead lock, invalidate the `Weak` in `Excluder` before broadcasting.
             *guard_inner = Weak::new();
+            drop(guard_inner);
             let _ = sender.broadcast_blocking(());
         }
     }
@@ -123,43 +149,66 @@ impl<T: Send + Clone> Excluder<T> {
 
 impl<T: Send + Clone> Default for Excluder<T> {
     fn default() -> Self {
-        Self::new()
+        Self::new(Duration::from_secs(5))
     }
 }
 
 impl<T: Send + Clone> Drop for Excluder<T> {
     fn drop(&mut self) {
         // makes sure `ExcluderLock::wait_unlock` return `None`.
-        let _ = self.last_val.lock_blocking().take();
+        let _ = self.storage.lock_blocking().0.take();
 
         let mut guard_inner = self.inner.lock_blocking();
         if let Some(sender) = guard_inner.upgrade() {
             *guard_inner = Weak::new();
+            drop(guard_inner);
             let _ = sender.broadcast_blocking(());
         }
     }
 }
 
-// XXX: have global timeout values in `AdapterConfig` and add a timeout argument here.
 impl<T: Send + Clone> ExcluderLock<T> {
-    /// Waits until the unlock signal is sent from the "foreign" callback.
-    /// Returns `None` when the corresponding `Excluder` is dropped.
-    pub async fn wait_unlock(mut self) -> Option<T> {
-        self.receiver.recv().await.ok()?;
-        self.last_val
-            .upgrade()
-            .and_then(|arc| arc.lock_blocking().as_ref().cloned())
-    }
-
     /// Waits until the unlock signal is sent from the "foreign" callback or the timeout
     /// is reached. Returns `None` when timeout or when the corresponding `Excluder` is dropped.
-    pub async fn wait_unlock_with_timeout(self, timeout: Duration) -> Option<T> {
-        self.wait_unlock()
+    pub async fn wait_unlock(mut self) -> Option<T> {
+        if self.firm_lock.is_none() {
+            self.firm_lock.replace(Instant::now());
+        }
+        let res = self
+            .receiver
+            .recv()
             .or(async {
-                Delay::new(timeout).await;
-                None
+                let instant_timeout = self.firm_lock.unwrap() + self.timeout;
+                let dur = instant_timeout
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or(Duration::from_millis(1))
+                    .max(Duration::from_millis(1));
+                Delay::new(dur).await;
+                Err(async_broadcast::RecvError::Closed)
             })
-            .await
+            .await;
+        let _ = self.firm_lock.take();
+        res.ok()?;
+        let store = self.storage.upgrade()?;
+        let val = store.lock().await.0.as_ref().cloned();
+        val
+    }
+}
+
+impl<T: Send + Clone> Drop for ExcluderLock<T> {
+    fn drop(&mut self) {
+        if self.firm_lock.is_some() {
+            let new_lock = ExcluderLock {
+                inner: self.inner.clone(),
+                receiver: self.receiver.clone(),
+                storage: self.storage.clone(),
+                timeout: self.timeout,
+                firm_lock: self.firm_lock,
+            };
+            if let Some(store) = self.storage.upgrade() {
+                store.lock_blocking().1.replace(new_lock);
+            }
+        }
     }
 }
 

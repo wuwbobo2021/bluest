@@ -60,7 +60,7 @@ impl DescriptorImpl {
     // in `read` and `write` methods, otherwise deadlock may occur.
 
     pub async fn read(&self) -> Result<Vec<u8>> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let inner = self.get_inner()?;
         let read_lock = inner.read.lock().await;
         let _write_lock = inner.write.lock().await;
@@ -76,7 +76,7 @@ impl DescriptorImpl {
     }
 
     pub async fn write(&self, value: &[u8]) -> Result<()> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let inner = self.get_inner()?;
         let _read_lock = inner.read.lock().await;
         let write_lock = inner.write.lock().await;

@@ -93,13 +93,6 @@ impl Drop for AttachFlag {
     }
 }
 
-/// Checks if the current thread is attached to the JVM by `VM::with_env` defined above.
-fn get_thread_attach_flag() -> bool {
-    THREAD_ATTACH_FLAG
-        .try_with(|flag| flag.borrow().is_some())
-        .unwrap_or(false)
-}
-
 fn set_thread_attach_flag(raw_vm: *mut JavaVM) {
     THREAD_ATTACH_FLAG.replace(Some(AttachFlag { raw_vm }));
 }
@@ -112,15 +105,15 @@ fn get_thread_exit_flag() -> bool {
 // on Android 8.0 and above, and on Android 7.0 the limit is 512 even if this is not done.
 // Creating local references that exceeds the specified capacity of the `PushLocalFrame` call
 // does not throw a fatal error (tested on Android 7.0, 9.0 and 13.0).
+const LOCAL_FRAME_SIZE: i32 = 256;
 
 fn increase_nest_level<'env>(env: Env<'env>) {
-    let local_frame_size = if get_thread_attach_flag() { 512 } else { 256 };
     let Ok(level) = WITH_ENV_NEST_LEVEL.try_with(|level| level.get()) else {
         return;
     };
     if level == 0 {
         let jnienv = env.as_raw();
-        let result = unsafe { ((**jnienv).v1_2.PushLocalFrame)(jnienv, local_frame_size) };
+        let result = unsafe { ((**jnienv).v1_2.PushLocalFrame)(jnienv, LOCAL_FRAME_SIZE) };
         assert_eq!(result, JNI_OK);
     }
     WITH_ENV_NEST_LEVEL.replace(level + 1);

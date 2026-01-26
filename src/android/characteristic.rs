@@ -78,7 +78,7 @@ impl CharacteristicImpl {
     // cannot be removed here.
 
     pub async fn read(&self) -> Result<Vec<u8>> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let inner = self.get_inner()?;
         let read_lock = inner.read.lock().await;
         let _write_lock = inner.write.lock().await;
@@ -118,7 +118,7 @@ impl CharacteristicImpl {
     }
 
     async fn write_internal(&self, value: &[u8], with_response: bool) -> Result<()> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let inner = self.get_inner()?;
         let _read_lock = inner.read.lock().await;
         let write_lock = inner.write.lock().await;
@@ -151,7 +151,7 @@ impl CharacteristicImpl {
 
     // NOTE: this returns a rather preservative value.
     pub fn max_write_len(&self) -> Result<usize> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let mtu = conn.mtu_changed_received.last_value().unwrap_or(23);
         Ok(mtu - 5)
     }
@@ -161,7 +161,7 @@ impl CharacteristicImpl {
     }
 
     pub async fn notify(&self) -> Result<impl Stream<Item = Result<Vec<u8>>> + Send + Unpin + '_> {
-        let conn = GattTree::find_connection(&self.dev_id).ok_or_check_conn(&self.dev_id)?;
+        let conn = GattTree::check_connection(&self.dev_id)?;
         let inner = self.get_inner()?;
         let inner_2 = inner.clone();
         let (gatt_for_stop, char_for_stop) = (conn.gatt.clone(), inner.char.clone());

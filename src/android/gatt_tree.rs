@@ -1,9 +1,12 @@
+// XXX: have adjustable timeout values in `AdapterConfig`.
+
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use futures_core::Stream;
 use java_spaghetti::{ByteArray, Env, Global, Ref};
+#[allow(unused)]
 use tracing::{error, info};
 
 use super::async_util::{Excluder, ExcluderLock, Notifier};
@@ -147,13 +150,14 @@ impl GattTree {
             Arc::new(GattConnection {
                 gatt,
                 callback_hdl_weak: Arc::downgrade(callback_hdl),
-                gatt_connect: Excluder::new(),
+                // Inspired by `CONNECTION_TIMEOUT_THRESHOLD` in `Android-BLE-Library`.
+                gatt_connect: Excluder::new(Duration::from_secs(20)),
                 global_event_receiver: event_receiver.clone(),
                 services: Mutex::new(HashMap::new()),
-                discover_services: Excluder::new(),
-                read_rssi: Excluder::new(),
+                discover_services: Excluder::new(Duration::from_secs(10)),
+                read_rssi: Excluder::new(Duration::from_secs(3)),
                 services_changes: Notifier::new(16),
-                mtu_changed_received: Excluder::new(),
+                mtu_changed_received: Excluder::new(Duration::from_secs(3)),
             }),
         );
     }
@@ -161,19 +165,14 @@ impl GattTree {
     /// Call it *once* right after calling `register_connection`.
     /// Returns `None` if it's still disconnected.
     pub async fn wait_connection_available(dev_id: &DeviceId) -> Result<(), crate::Error> {
-        let conn = Self::find_connection(dev_id).ok_or_check_conn(dev_id)?;
+        let conn = Self::check_connection(dev_id)?;
         let connect_lock = conn.gatt_connect.lock().await;
         if conn.gatt_connect.last_value().is_none() {
-            // Inspired by `CONNECTION_TIMEOUT_THRESHOLD` in `Android-BLE-Library`.
             drop(conn);
-            if connect_lock
-                .wait_unlock_with_timeout(Duration::from_secs(20))
-                .await
-                .is_some()
-            {
+            if connect_lock.wait_unlock().await.is_some() {
                 Ok(())
             } else {
-                let _ = Self::find_connection(dev_id).ok_or_check_conn(dev_id)?;
+                let _ = Self::check_connection(dev_id)?;
                 Err(crate::Error::from(crate::error::ErrorKind::Timeout))
             }
         } else {
@@ -213,6 +212,10 @@ impl GattTree {
         } else {
             false
         }
+    }
+
+    pub fn check_connection(dev_id: &DeviceId) -> Result<Arc<GattConnection>, crate::Error> {
+        Self::find_connection(dev_id).ok_or(crate::error::ErrorKind::NotConnected.into())
     }
 
     pub fn find_connection(dev_id: &DeviceId) -> Option<Arc<GattConnection>> {
@@ -282,8 +285,8 @@ fn construct_service_tree<'env>(service_obj: &Ref<'env, BluetoothGattService>) -
                 desc_id,
                 Arc::new(DescriptorInner {
                     desc: desc_obj.as_global(),
-                    read: Excluder::new(),
-                    write: Excluder::new(),
+                    read: Excluder::new(Duration::from_secs(3)),
+                    write: Excluder::new(Duration::from_secs(3)),
                 }),
             );
         }
@@ -293,8 +296,8 @@ fn construct_service_tree<'env>(service_obj: &Ref<'env, BluetoothGattService>) -
                 char: char_obj.as_global(),
                 descs,
                 notify: Notifier::new(128),
-                read: Excluder::new(),
-                write: Excluder::new(),
+                read: Excluder::new(Duration::from_secs(3)),
+                write: Excluder::new(Duration::from_secs(3)),
             }),
         );
     }

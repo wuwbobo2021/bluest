@@ -14,7 +14,7 @@
 
 Bluest is a cross-platform [Bluetooth Low Energy] (BLE) library for [Rust]. It
 currently supports Windows (version 10 and later), MacOS/iOS, and Linux. Android
-support is planned.
+support is experimental.
 
 The goal of Bluest is to create a _thin_ abstraction on top of the
 platform-specific Bluetooth APIs in order to provide safe, cross-platform access
@@ -89,21 +89,22 @@ Most Bluest APIs should behave consistently across all supported platforms.
 Those APIs with significant differences in behavior are summarized in the table
 below.
 
-| Method                                                           | MacOS/iOS | Windows | Linux |
-| ---------------------------------------------------------------- | :-------: | :-----: | :---: |
-| [`Adapter::connect_device`][Adapter::connect_device]             |    ✅     |   ✨    |  ✅   |
-| [`Adapter::disconnect_device`][Adapter::disconnect_device]       |    ✅     |   ✨    |  ✅   |
-| [`Device::name`][Device::name]                                   |    ✅     |   ✅    |  ⌛️   |
-| [`Device::is_paired`][Device::is_paired]                         |    ❌     |   ✅    |  ✅   |
-| [`Device::pair`][Device::pair]                                   |    ✨     |   ✅    |  ✅   |
-| [`Device::pair_with_agent`][Device::pair_with_agent]             |    ✨     |   ✅    |  ✅   |
-| [`Device::unpair`][Device::unpair]                               |    ❌     |   ✅    |  ✅   |
-| [`Device::rssi`][Device::rssi]                                   |    ✅     |   ❌    |  ❌   |
-| [`Service::uuid`][Service::uuid]                                 |    ✅     |   ✅    |  ⌛️   |
-| [`Service::is_primary`][Service::is_primary]                     |    ✅     |   ❌    |  ✅   |
-| [`Characteristic::uuid`][Characteristic::uuid]                   |    ✅     |   ✅    |  ⌛️   |
-| [`Characteristic::max_write_len`][Characteristic::max_write_len] |    ✅     |   ✅    |  ⌛️   |
-| [`Descriptor::uuid`][Descriptor::uuid]                           |    ✅     |   ✅    |  ⌛️   |
+| Method                                                           | MacOS/iOS | Windows | Linux | Android |
+| ---------------------------------------------------------------- | :-------: | :-----: | :---: | :-----: |
+| [`Adapter::connect_device`][Adapter::connect_device]             |    ✅     |   ✨    |  ✅   |   ✅    |
+| [`Adapter::disconnect_device`][Adapter::disconnect_device]       |    ✅     |   ✨    |  ✅   |   ✅    |
+| [`Device::name`][Device::name]                                   |    ✅     |   ✅    |  ⌛️   |   ✅    |
+| [`Device::is_paired`][Device::is_paired]                         |    ❌     |   ✅    |  ✅   |   ✅    |
+| [`Device::pair`][Device::pair]                                   |    ✨     |   ✅    |  ✅   |   ✅    |
+| [`Device::pair_with_agent`][Device::pair_with_agent]             |    ✨     |   ✅    |  ✅   |   ❌    |
+| [`Device::unpair`][Device::unpair]                               |    ❌     |   ✅    |  ✅   |   ❌    |
+| [`Device::rssi`][Device::rssi]                                   |    ✅     |   ❌    |  ❌   |   ✅    |
+| [`Device::open_l2cap_channel`][Device::open_l2cap_channel]       |    ⌛️     |   ❌    |  ⌛️   |   ✅    |
+| [`Service::uuid`][Service::uuid]                                 |    ✅     |   ✅    |  ⌛️   |   ✅    |
+| [`Service::is_primary`][Service::is_primary]                     |    ✅     |   ❌    |  ✅   |   ✅    |
+| [`Characteristic::uuid`][Characteristic::uuid]                   |    ✅     |   ✅    |  ⌛️   |   ✅    |
+| [`Characteristic::max_write_len`][Characteristic::max_write_len] |    ✅     |   ✅    |  ⌛️   |   ✅    |
+| [`Descriptor::uuid`][Descriptor::uuid]                           |    ✅     |   ✅    |  ⌛️   |   ✅    |
 
 ✅ = supported\
 ✨ = managed automatically by the OS, this method is a no-op\

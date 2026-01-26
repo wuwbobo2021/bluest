@@ -243,8 +243,7 @@ impl DeviceImpl {
     }
 
     pub(crate) fn get_connection(&self) -> Result<Arc<GattConnection>, crate::Error> {
-        self.connection
-            .get_or_find(|| GattTree::find_connection(&self.id).ok_or(ErrorKind::NotConnected.into()))
+        self.connection.get_or_find(|| GattTree::check_connection(&self.id))
     }
 }
 

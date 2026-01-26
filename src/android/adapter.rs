@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use futures_core::Stream;
 use futures_lite::{stream, StreamExt};
@@ -24,9 +23,10 @@ use super::device::DeviceImpl;
 use super::event_receiver::{EventReceiver, GlobalEvent};
 use super::gatt_tree::{BluetoothGattCallbackProxy, CachedWeak, GattTree};
 use super::jni::{ByteArrayExt, Monitor, VM};
-use super::vm_context::{android_api_level, android_context, jni_get_vm, jni_set_vm, jni_with_env};
+use super::vm_context::{
+    android_api_level, android_context, android_has_permission, jni_get_vm, jni_set_vm, jni_with_env,
+};
 use super::{JavaIterator, OptionExt};
-use crate::android::vm_context::android_has_permission;
 use crate::error::ErrorKind;
 use crate::util::defer;
 use crate::{
@@ -51,6 +51,9 @@ struct AdapterInner {
 static CONN_MUTEX: async_lock::Mutex<()> = async_lock::Mutex::new(());
 
 /// Configuration for creating an interface to the default Bluetooth adapter of the system.
+///
+/// By deafult, [ndk-context](https://docs.rs/ndk-context/0.1.1/ndk_context) is used for
+/// obtaining the JNI `JavaVM` pointer.
 pub struct AdapterConfig {
     /// - `vm` must be a valid JNI `JavaVM` pointer to a VM that will stay alive for the current
     ///   native library's lifetime. This is true for any library used by an Android application.
@@ -373,9 +376,18 @@ impl AdapterImpl {
             ))
         })?;
 
-        let stream = StreamUntil::create(stream, self.events().await?, |e| {
-            matches!(e, Ok(AdapterEvent::Unavailable))
-        });
+        #[rustfmt::skip]
+        let stream = StreamUntil::create(
+            stream,
+            self.inner.global_event_receiver.subscribe().await?,
+            |event| {
+                matches!(
+                    event,
+                    GlobalEvent::DiscoveryFinished
+                        | GlobalEvent::AdapterStateChanged(BluetoothAdapter::STATE_OFF)
+                )
+            }
+        );
 
         // Wait for scan started or failed.
         match start_receiver.recv().await {
@@ -438,7 +450,7 @@ impl AdapterImpl {
             GattTree::wait_connection_available(&device.id()).await?;
         }
         if self.inner.request_mtu_on_connect {
-            let conn = GattTree::find_connection(&device.id()).ok_or_check_conn(&device.id())?;
+            let conn = GattTree::check_connection(&device.id())?;
             let mtu_lock = conn.mtu_changed_received.lock().await;
             jni_with_env(|env| {
                 let gatt = conn.gatt.as_ref(env);
@@ -446,7 +458,7 @@ impl AdapterImpl {
                 gatt.requestMtu(517)?;
                 Ok::<_, crate::Error>(())
             })?;
-            let _ = mtu_lock.wait_unlock_with_timeout(Duration::from_secs(3)).await;
+            let _ = mtu_lock.wait_unlock().await;
         }
         // validates GATT tree API objects again upon reconnection
         if device.0.once_connected.get().is_some() {
@@ -481,7 +493,7 @@ impl AdapterImpl {
     }
 
     // XXX: currently this doesn't work with random address devices.
-    // FIXME: currently this monitors only devices connected/disconnected by this crate,
+    // XXX: currently this monitors only devices connected/disconnected by this crate,
     // even if `allow_multiple_connections` is true.
     pub async fn device_connection_events<'a>(
         &'a self,

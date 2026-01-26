@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use java_spaghetti::{Env, Global, Ref};
+#[allow(unused)]
 use tracing::{error, info};
 
 use super::async_util::{Notifier, NotifierReceiver};
@@ -16,6 +17,8 @@ use super::{DeviceId, OptionExt};
 pub enum GlobalEvent {
     /// contains EXTRA_STATE
     AdapterStateChanged(i32),
+    /// `Adapter::scan` should return when this event is received
+    DiscoveryFinished,
     /// contains device address
     #[allow(unused)] // NOTE: this may not be received; this can be removed.
     AclConnectionStateChanged(DeviceId, bool),
@@ -61,6 +64,7 @@ impl EventReceiver {
                         let filter = IntentFilter::new(env)?;
                         for action in [
                             BluetoothAdapter::ACTION_STATE_CHANGED,
+                            BluetoothAdapter::ACTION_DISCOVERY_FINISHED,
                             BluetoothDevice::ACTION_ACL_CONNECTED,
                             BluetoothDevice::ACTION_ACL_DISCONNECTED,
                             BluetoothDevice::ACTION_BOND_STATE_CHANGED,
@@ -129,6 +133,10 @@ impl super::callback::BroadcastReceiverProxy for BroadcastReceiverProxy {
                     }
                 }
                 rec_hdl.notifier.notify(GlobalEvent::AdapterStateChanged(val));
+                Ok::<_, crate::Error>(())
+            }
+            BluetoothAdapter::ACTION_DISCOVERY_FINISHED => {
+                rec_hdl.notifier.notify(GlobalEvent::DiscoveryFinished);
                 Ok::<_, crate::Error>(())
             }
             BluetoothDevice::ACTION_ACL_CONNECTED => {
