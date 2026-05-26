@@ -1,56 +1,70 @@
-use crate::{Characteristic, Result, Service, Uuid};
+use crate::{android::characteristic::CharacteristicImpl, Characteristic, Error, Result, Service, Uuid};
 
-#[derive(Debug, Clone)]
-pub struct ServiceImpl {}
+use super::device::convert_services;
 
-impl PartialEq for ServiceImpl {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
-    }
-}
-
-impl Eq for ServiceImpl {}
-
-impl std::hash::Hash for ServiceImpl {
-    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
-        todo!()
-    }
-}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ServiceImpl(pub(super) android_ble::Service);
 
 impl ServiceImpl {
     pub fn uuid(&self) -> Uuid {
-        todo!()
+        self.0.uuid()
     }
 
     pub async fn uuid_async(&self) -> Result<Uuid> {
-        todo!()
+        Ok(self.uuid())
     }
 
     pub async fn is_primary(&self) -> Result<bool> {
-        todo!()
+        self.0.is_primary().await.map_err(Error::from)
     }
 
     pub async fn discover_characteristics(&self) -> Result<Vec<Characteristic>> {
-        todo!()
+        self.0
+            .discover_characteristics()
+            .await
+            .map(convert_chars)
+            .map_err(Error::from)
     }
 
-    pub async fn discover_characteristics_with_uuid(&self, _uuid: Uuid) -> Result<Vec<Characteristic>> {
-        todo!()
+    pub async fn discover_characteristics_with_uuid(&self, uuid: Uuid) -> Result<Vec<Characteristic>> {
+        self.0
+            .discover_characteristics_with_uuid(uuid)
+            .await
+            .map(convert_chars)
+            .map_err(Error::from)
     }
 
     pub async fn characteristics(&self) -> Result<Vec<Characteristic>> {
-        todo!()
+        self.0.characteristics().await.map(convert_chars).map_err(Error::from)
     }
 
     pub async fn discover_included_services(&self) -> Result<Vec<Service>> {
-        todo!()
+        self.0
+            .discover_included_services()
+            .await
+            .map(convert_services)
+            .map_err(Error::from)
     }
 
-    pub async fn discover_included_services_with_uuid(&self, _uuid: Uuid) -> Result<Vec<Service>> {
-        todo!()
+    pub async fn discover_included_services_with_uuid(&self, uuid: Uuid) -> Result<Vec<Service>> {
+        self.0
+            .discover_included_services_with_uuid(uuid)
+            .await
+            .map(convert_services)
+            .map_err(Error::from)
     }
 
     pub async fn included_services(&self) -> Result<Vec<Service>> {
-        todo!()
+        self.0
+            .included_services()
+            .await
+            .map(convert_services)
+            .map_err(Error::from)
     }
+}
+
+fn convert_chars(src: Vec<android_ble::Characteristic>) -> Vec<Characteristic> {
+    src.into_iter()
+        .map(|ch| Characteristic(CharacteristicImpl(ch)))
+        .collect()
 }

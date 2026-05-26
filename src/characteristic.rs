@@ -62,6 +62,15 @@ impl Characteristic {
     }
 
     /// Get the maximum amount of data that can be written in a single packet for this characteristic.
+    ///
+    /// # Platform specific
+    ///
+    /// ## Android
+    ///
+    /// The Android API does not provide a method to query the current MTU value directly;
+    /// instead, `BluetoothGatt.requestMtu()` may be called in `Adapter::connect_device`
+    /// to have a possible maximum MTU in the callback. This can be configured with
+    /// `AdapterConfig::request_mtu_on_connect`.
     #[inline]
     pub fn max_write_len(&self) -> Result<usize> {
         self.0.max_write_len()

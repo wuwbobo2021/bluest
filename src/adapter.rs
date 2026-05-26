@@ -21,7 +21,6 @@ impl Adapter {
 
     /// Creates an interface to a Bluetooth adapter using the default config.
     #[inline]
-    #[cfg(not(target_os = "android"))]
     pub async fn default() -> Result<Self> {
         sys::adapter::AdapterImpl::with_config(AdapterConfig::default())
             .await
@@ -159,6 +158,10 @@ impl Adapter {
     /// will only be generated for devices that have been connected with `connect_device`.
     ///
     /// On iOS/iPadOS connection and disconnection events can be generated for any device.
+    ///
+    /// ## Android
+    ///
+    /// The description of the limitation on MacOS also applies to Android.
     #[inline]
     pub async fn device_connection_events<'a>(
         &'a self,

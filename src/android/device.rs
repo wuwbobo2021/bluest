@@ -1,115 +1,114 @@
 use futures_core::Stream;
-use futures_lite::stream;
-use java_spaghetti::Global;
+use futures_lite::StreamExt;
 use uuid::Uuid;
 
-use super::bindings::android::bluetooth::BluetoothDevice;
+use crate::android::service::ServiceImpl;
 use crate::pairing::PairingAgent;
-use crate::{DeviceId, Result, Service, ServicesChanged};
+use crate::{error::ErrorKind, DeviceId, Error, Result, Service, ServicesChanged};
 
-#[derive(Clone)]
-pub struct DeviceImpl {
-    pub(super) id: DeviceId,
-    #[cfg_attr(not(feature = "l2cap"), allow(unused))]
-    pub(super) device: Global<BluetoothDevice>,
-}
-
-impl PartialEq for DeviceImpl {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
-    }
-}
-
-impl Eq for DeviceImpl {}
-
-impl std::hash::Hash for DeviceImpl {
-    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
-        todo!()
-    }
-}
-
-impl std::fmt::Debug for DeviceImpl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_struct("Device");
-        f.finish()
-    }
-}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DeviceImpl(pub(super) android_ble::Device);
 
 impl std::fmt::Display for DeviceImpl {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        //f.write_str(self.name().as_deref().unwrap_or("(Unknown)"))
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
 impl DeviceImpl {
     pub fn id(&self) -> DeviceId {
-        self.id.clone()
+        self.0.id()
     }
 
     pub fn name(&self) -> Result<String> {
-        todo!()
+        self.0.name().map_err(Error::from)
     }
 
     pub async fn name_async(&self) -> Result<String> {
-        todo!()
+        self.name()
     }
 
     pub async fn is_connected(&self) -> bool {
-        todo!()
+        self.0.is_connected().await
     }
 
     pub async fn is_paired(&self) -> Result<bool> {
-        todo!()
+        self.0.is_paired().await.map_err(Error::from)
     }
 
     pub async fn pair(&self) -> Result<()> {
-        todo!()
+        self.0.pair().await.map_err(Error::from)
     }
 
     pub async fn pair_with_agent<T: PairingAgent + 'static>(&self, _agent: &T) -> Result<()> {
-        todo!()
+        Err(Error::new(
+            ErrorKind::NotSupported,
+            None,
+            "Android does not support custom pairing agent",
+        ))
     }
 
     pub async fn unpair(&self) -> Result<()> {
-        todo!()
+        Err(Error::new(
+            ErrorKind::NotSupported,
+            None,
+            "Android might not allow bluetooth device unpairing in an application",
+        ))
     }
 
     pub async fn discover_services(&self) -> Result<Vec<Service>> {
-        todo!()
+        self.0
+            .discover_services()
+            .await
+            .map(convert_services)
+            .map_err(Error::from)
     }
 
-    pub async fn discover_services_with_uuid(&self, _uuid: Uuid) -> Result<Vec<Service>> {
-        todo!()
+    pub async fn discover_services_with_uuid(&self, uuid: Uuid) -> Result<Vec<Service>> {
+        self.0
+            .discover_services_with_uuid(uuid)
+            .await
+            .map(convert_services)
+            .map_err(Error::from)
     }
 
     pub async fn services(&self) -> Result<Vec<Service>> {
-        todo!()
+        self.0.services().await.map(convert_services).map_err(Error::from)
     }
 
     pub async fn service_changed_indications(
         &self,
     ) -> Result<impl Stream<Item = Result<ServicesChanged>> + Send + Unpin + '_> {
-        Ok(stream::empty()) // TODO
+        Ok(self.0.service_changed_indications().await?.map(|ch| {
+            ch.map(|ch| ServicesChanged(ServicesChangedImpl(ch)))
+                .map_err(Error::from)
+        }))
     }
 
     pub async fn rssi(&self) -> Result<i16> {
-        todo!()
+        self.0.rssi().await.map_err(Error::from)
     }
 
     #[cfg(feature = "l2cap")]
     pub async fn open_l2cap_channel(&self, psm: u16, secure: bool) -> Result<super::l2cap_channel::L2capChannel> {
-        let (reader, writer) = super::l2cap_channel::open_l2cap_channel(self.device.clone(), psm, secure)?;
-
-        Ok(super::l2cap_channel::L2capChannel { reader, writer })
+        self.0
+            .open_l2cap_channel(psm, secure)
+            .await
+            .map(|ch| ch.split())
+            .map(|(reader, writer)| super::l2cap_channel::L2capChannel { reader, writer })
+            .map_err(Error::from)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ServicesChangedImpl;
+pub struct ServicesChangedImpl(android_ble::ServicesChanged);
 
 impl ServicesChangedImpl {
-    pub fn was_invalidated(&self, _service: &Service) -> bool {
-        true
+    pub fn was_invalidated(&self, service: &Service) -> bool {
+        self.0.was_invalidated(&service.0 .0)
     }
+}
+
+pub(super) fn convert_services(src: Vec<android_ble::Service>) -> Vec<Service> {
+    src.into_iter().map(|ser| Service(ServiceImpl(ser))).collect()
 }

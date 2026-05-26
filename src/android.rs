@@ -1,8 +1,4 @@
-use java_spaghetti::{CastError, Local};
-
-use self::bindings::java::lang::Throwable;
-use crate::error::ErrorKind;
-
+pub use android_ble::DeviceId;
 pub mod adapter;
 pub mod characteristic;
 pub mod descriptor;
@@ -10,56 +6,38 @@ pub mod device;
 pub mod l2cap_channel;
 pub mod service;
 
-#[allow(mismatched_lifetime_syntaxes)]
-pub(crate) mod bindings;
-
-/// A platform-specific device identifier.
-/// On android it contains the Bluetooth address in the format `AB:CD:EF:01:23:45`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct DeviceId(pub(crate) String);
-
-impl std::fmt::Display for DeviceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
+impl From<android_ble::Error> for crate::Error {
+    fn from(err: android_ble::Error) -> Self {
+        Self::new(err.kind().into(), err.source_cloned(), err.message())
     }
 }
 
-impl From<Local<'_, Throwable>> for crate::Error {
-    fn from(e: Local<'_, Throwable>) -> Self {
-        Self::new(ErrorKind::Internal, None, format!("{e:?}"))
-    }
-}
-
-impl From<CastError> for crate::Error {
-    fn from(e: CastError) -> Self {
-        Self::new(ErrorKind::Internal, None, format!("{e:?}"))
-    }
-}
-
-struct JavaIterator<'env>(Local<'env, bindings::java::util::Iterator>);
-
-impl<'env> Iterator for JavaIterator<'env> {
-    type Item = Local<'env, bindings::java::lang::Object>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.0.hasNext().unwrap() {
-            let obj = self.0.next().unwrap().unwrap();
-            // upgrade lifetime to the original env.
-            let obj = unsafe { Local::from_raw(self.0.env(), obj.into_raw()) };
-            Some(obj)
-        } else {
-            None
+impl From<android_ble::error::ErrorKind> for crate::error::ErrorKind {
+    fn from(value: android_ble::error::ErrorKind) -> Self {
+        use crate::error::ErrorKind as DstErrKind;
+        use android_ble::error::ErrorKind as SrcErrKind;
+        match value {
+            SrcErrKind::AdapterUnavailable => DstErrKind::AdapterUnavailable,
+            SrcErrKind::AlreadyScanning => DstErrKind::AlreadyScanning,
+            SrcErrKind::ConnectionFailed => DstErrKind::ConnectionFailed,
+            SrcErrKind::NotConnected => DstErrKind::NotConnected,
+            SrcErrKind::NotSupported => DstErrKind::NotSupported,
+            SrcErrKind::NotAuthorized => DstErrKind::NotAuthorized,
+            SrcErrKind::NotReady => DstErrKind::NotReady,
+            SrcErrKind::NotFound => DstErrKind::NotFound,
+            SrcErrKind::InvalidParameter => DstErrKind::InvalidParameter,
+            SrcErrKind::Timeout => DstErrKind::Timeout,
+            SrcErrKind::Protocol(att) => DstErrKind::Protocol(att.into()),
+            SrcErrKind::Internal => DstErrKind::Internal,
+            SrcErrKind::ServiceChanged => DstErrKind::ServiceChanged,
+            SrcErrKind::Other => DstErrKind::Other,
+            _ => DstErrKind::Other,
         }
     }
 }
 
-trait OptionExt<T> {
-    fn non_null(self) -> Result<T, crate::Error>;
-}
-
-impl<T> OptionExt<T> for Option<T> {
-    #[track_caller]
-    fn non_null(self) -> Result<T, crate::Error> {
-        self.ok_or_else(|| crate::Error::new(ErrorKind::Internal, None, "Java call unexpectedly returned null."))
+impl From<android_ble::error::AttError> for crate::error::AttError {
+    fn from(value: android_ble::error::AttError) -> Self {
+        Self::from_u8(value.as_u8())
     }
 }
