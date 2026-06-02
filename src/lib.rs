@@ -127,9 +127,6 @@ pub mod pairing;
 mod service;
 mod util;
 
-#[cfg(all(target_os = "android", not(feature = "unstable")))]
-compile_error!("Android support is unstable and requires the 'unstable' feature to be enabled");
-
 #[cfg(all(windows, feature = "l2cap"))]
 compile_error!("L2CAP support is not available on Windows");
 
