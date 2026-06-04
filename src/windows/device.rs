@@ -164,6 +164,7 @@ impl DeviceImpl {
         let pairing_fut = pin!(async move {
             while let Some((event_args, deferral)) = rx.next().await {
                 match event_args.PairingKind()? {
+                    #[allow(clippy::collapsible_match)]
                     DevicePairingKinds::ConfirmOnly => {
                         if agent.confirm(&device).await.is_ok() {
                             event_args.Accept()?;
