@@ -2,12 +2,11 @@ use futures_core::Stream;
 use futures_lite::StreamExt;
 use uuid::Uuid;
 
+use super::device::DeviceImpl;
+use super::DeviceId;
 use crate::{
     AdapterEvent, AdvertisementData, AdvertisingDevice, ConnectionEvent, Device, Error, ManufacturerData, Result,
 };
-
-use super::device::DeviceImpl;
-use super::DeviceId;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AdapterImpl(android_ble::Adapter);

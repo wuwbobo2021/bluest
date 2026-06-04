@@ -2,7 +2,8 @@ use futures_core::Stream;
 use futures_lite::StreamExt;
 use uuid::Uuid;
 
-use crate::{android::descriptor::DescriptorImpl, CharacteristicProperties, Descriptor, Error, Result};
+use crate::android::descriptor::DescriptorImpl;
+use crate::{CharacteristicProperties, Descriptor, Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CharacteristicImpl(pub(super) android_ble::Characteristic);

@@ -14,8 +14,9 @@ impl From<android_ble::Error> for crate::Error {
 
 impl From<android_ble::error::ErrorKind> for crate::error::ErrorKind {
     fn from(value: android_ble::error::ErrorKind) -> Self {
-        use crate::error::ErrorKind as DstErrKind;
         use android_ble::error::ErrorKind as SrcErrKind;
+
+        use crate::error::ErrorKind as DstErrKind;
         match value {
             SrcErrKind::AdapterUnavailable => DstErrKind::AdapterUnavailable,
             SrcErrKind::AlreadyScanning => DstErrKind::AlreadyScanning,

@@ -1,6 +1,6 @@
-use crate::{android::characteristic::CharacteristicImpl, Characteristic, Error, Result, Service, Uuid};
-
 use super::device::convert_services;
+use crate::android::characteristic::CharacteristicImpl;
+use crate::{Characteristic, Error, Result, Service, Uuid};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServiceImpl(pub(super) android_ble::Service);

@@ -3,8 +3,9 @@ use futures_lite::StreamExt;
 use uuid::Uuid;
 
 use crate::android::service::ServiceImpl;
+use crate::error::ErrorKind;
 use crate::pairing::PairingAgent;
-use crate::{error::ErrorKind, DeviceId, Error, Result, Service, ServicesChanged};
+use crate::{DeviceId, Error, Result, Service, ServicesChanged};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceImpl(pub(super) android_ble::Device);
